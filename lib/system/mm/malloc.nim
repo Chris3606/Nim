@@ -1,22 +1,56 @@
 
 {.push stackTrace: off.}
 
+# If we're using HeapAlloc, do the appropriate FFI items to import it.  Because we're in the system library, even importing
+# Nim's windows/winlean doesn't work well (no dynlib), so we have to do imports the old fashioned way.
+when defined(winMallocMeansHeapAlloc):
+  #import dynlib
+  #import lib/windows/winlean
+
+  type
+    DWORD = int32
+    Handle = int
+    WINBOOL = int32
+    
+  const
+    HEAP_ZERO_MEMORY = 0x00000008
+
+  proc HeapAlloc(hHeap: Handle, dwFlags: DWORD, dwBytes: csize_t): pointer {.stdcall, header: "<Windows.h>", importc, sideEffect.}
+  proc GetProcessHeap(): Handle {.stdcall, header: "<Windows.h>", importc, sideEffect.}
+  proc HeapReAlloc(hHeap: Handle, dwFlags: DWORD, lpMem: pointer, dwBytes: csize_t): pointer {.stdcall, header: "<Windows.h>", importc, sideEffect.}
+  proc HeapFree(hHeap: Handle, dwFlags: DWORD, lpMem: pointer): WINBOOL {.stdcall, header: "<Windows.h>", importc, sideEffect.}
+
 proc allocImpl(size: Natural): pointer =
-  c_malloc(size.csize_t)
+  when defined(winMallocMeansHeapAlloc):
+    HeapAlloc(GetProcessHeap(), 0, size.csize_t)
+  else:
+    c_malloc(size.csize_t)
 
 proc alloc0Impl(size: Natural): pointer =
-  c_calloc(size.csize_t, 1)
+  when defined(winMallocMeansHeapAlloc):
+    HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size.csize_t)
+  else:
+    c_calloc(size.csize_t, 1)
 
 proc reallocImpl(p: pointer, newSize: Natural): pointer =
-  c_realloc(p, newSize.csize_t)
+  when defined(winMallocMeansHeapAlloc):
+    HeapReAlloc(GetProcessHeap(), 0, p, newSize.csize_t)
+  else:
+    c_realloc(p, newSize.csize_t)
 
 proc realloc0Impl(p: pointer, oldsize, newSize: Natural): pointer =
-  result = realloc(p, newSize.csize_t)
-  if newSize > oldSize:
-    zeroMem(cast[pointer](cast[int](result) + oldSize), newSize - oldSize)
+  when defined(winMallocMeansHeapAlloc):
+    HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, p, newSize.csize_t)
+  else:
+    result = realloc(p, newSize.csize_t)
+    if newSize > oldSize:
+      zeroMem(cast[pointer](cast[int](result) + oldSize), newSize - oldSize)
 
 proc deallocImpl(p: pointer) =
-  c_free(p)
+  when defined(winMallocMeansHeapAlloc):
+    discard HeapFree(GetProcessHeap(), 0, p)
+  else:
+    c_free(p)
 
 
 # The shared allocators map on the regular ones
